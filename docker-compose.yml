@@ -1,0 +1,47 @@
+# VPS stack: Postgres+pgvector, web, 2 workers, Caddy (automatic HTTPS for the Meta webhook).
+# Moving off Supabase:  pg_dump from Supabase → psql into the `db` service → point DATABASE_URL at db.  Done.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rply
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: rply
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U rply"], interval: 5s, retries: 10 }
+
+  migrate:
+    build: .
+    env_file: .env
+    environment: { DATABASE_URL: "postgres://rply:${POSTGRES_PASSWORD:-change-me}@db:5432/rply" }
+    command: ["npx", "tsx", "scripts/migrate.ts"]
+    depends_on: { db: { condition: service_healthy } }
+
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment: { DATABASE_URL: "postgres://rply:${POSTGRES_PASSWORD:-change-me}@db:5432/rply", DB_PREPARE: "true" }
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    healthcheck: { test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"], interval: 30s }
+
+  worker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment: { DATABASE_URL: "postgres://rply:${POSTGRES_PASSWORD:-change-me}@db:5432/rply", DB_PREPARE: "true" }
+    command: ["npx", "tsx", "worker/index.ts"]
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    deploy: { replicas: 2 }
+    stop_grace_period: 30s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes: [./deploy/Caddyfile:/etc/caddy/Caddyfile, caddy:/data]
+    environment: { DOMAIN: "${DOMAIN:-localhost}" }
+    depends_on: [web]
+
+volumes: { pgdata: {}, caddy: {} }
