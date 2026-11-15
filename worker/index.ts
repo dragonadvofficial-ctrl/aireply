@@ -6,9 +6,8 @@ import "./boot";
 import { hostname } from "node:os";
 import { env } from "../src/lib/env";
 import { sql } from "../src/lib/db";
-import { claim, complete, defer, enqueue, fail, prune, reapStale, type Job } from "../src/lib/queue";
-import { runJob, RateDeferred } from "../src/lib/engine/processor";
-import { MetaError } from "../src/lib/meta/graph";
+import { claim, enqueue, prune, reapStale, type Job } from "../src/lib/queue";
+import { executeJob } from "../src/lib/engine/run";
 
 const ID = `${hostname()}:${process.pid}`;
 let running = 0;
@@ -16,26 +15,7 @@ let stopping = false;
 
 async function execute(job: Job) {
   running++;
-  const t0 = Date.now();
-  try {
-    await runJob(job);
-    await complete(job.id);
-    log("done", job, Date.now() - t0);
-  } catch (e) {
-    if (e instanceof RateDeferred) { await defer(job, e.ms); log("deferred", job, e.ms); }
-    else if (e instanceof MetaError && !e.retryable) {
-      // permanent (deleted comment, user blocked page, permission missing…) → don't hammer Meta
-      await sql`update jobs set status = 'dead', last_error = ${e.message}, finished_at = now(), locked_at = null where id = ${job.id}`;
-      if (job.kind === "reply") {
-        await sql`update messages set status = 'failed', ai = ai || ${sql.json({ error: e.message })}
-                  where conversation_id = ${job.payload.conversationId} and direction = 'in' and status = 'received'`;
-      }
-      log("dead", job, 0, e.message);
-    } else {
-      await fail(job, e);
-      log("retry", job, 0, e instanceof Error ? e.message : String(e));
-    }
-  } finally { running--; }
+  try { await executeJob(job, ID, log); } finally { running--; }
 }
 
 function log(what: string, job: Job, n: number, err?: string) {

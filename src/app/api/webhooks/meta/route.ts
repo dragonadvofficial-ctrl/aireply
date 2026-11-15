@@ -1,11 +1,13 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { env } from "@/lib/env";
 import { sql } from "@/lib/db";
 import { normalize, verifySignature } from "@/lib/meta/webhook";
 import { ingest } from "@/lib/engine/ingest";
+import { drain } from "@/lib/engine/run";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 /** Meta verification handshake (App Dashboard → Webhooks → Verify and save). */
 export async function GET(req: Request) {
@@ -28,6 +30,8 @@ export async function POST(req: Request) {
   const [row] = await sql<{ id: number }[]>`insert into webhook_events (object, payload) values (${body.object ?? null}, ${sql.json(body)}) returning id`;
   try {
     const queued = await ingest(normalize(body));
+    // serverless hosts: finish the reply after answering Meta (set INLINE_WORKER=false when a real worker runs)
+    if (queued && process.env.INLINE_WORKER !== "false") after(() => drain(50_000).catch((e) => console.error("drain", e?.message)));
     await sql`update webhook_events set processed_at = now() where id = ${row.id}`;
     return NextResponse.json({ ok: true, queued });
   } catch (e: any) {
