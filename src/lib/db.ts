@@ -11,6 +11,9 @@ export function createSql(url = env.DATABASE_URL, max = env.DB_POOL_MAX): Sql {
     prepare: env.DB_PREPARE,            // false for Supabase transaction pooler (pgbouncer)
     idle_timeout: 20,
     connect_timeout: 10,
+    max_lifetime: 60 * 5,
+    keep_alive: 10,
+    connection: { statement_timeout: 15000, idle_in_transaction_session_timeout: 15000 },
     transform: { undefined: null },
     onnotice: () => {},
   });
