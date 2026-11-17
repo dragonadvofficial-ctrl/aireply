@@ -75,7 +75,7 @@ export type Turn = { direction: "in" | "out"; text: string };
 /** DYNAMIC SUFFIX — changes every call. Keep it small. */
 export function dynamicPrompt(o: {
   ctx: BrainCtx; channel: "comment" | "dm"; text: string; contactName?: string | null;
-  summary?: string; history?: Turn[]; retrieved?: string[];
+  summary?: string; history?: Turn[]; retrieved?: string[]; rule?: string; delivery?: string;
 }): string {
   const platform = o.ctx.account.platform === "instagram" ? "Instagram" : "Facebook";
   const where = o.channel === "comment" ? `public comment on a ${platform} post` : `private ${platform} DM`;
@@ -86,6 +86,8 @@ export function dynamicPrompt(o: {
     o.summary ? `EARLIER IN THIS CONVERSATION: ${o.summary}` : "",
     hist ? `RECENT:\n${hist}` : "",
     o.retrieved?.length ? `RELEVANT BRAIN:\n${o.retrieved.map((r) => `- ${r.replace(/\n+/g, " ")}`).join("\n")}` : "",
+    o.rule ? `RULE FROM THE TEAM (this message matched it — follow these instructions and use this data; it is part of BRAIN and overrides general behavior):\n${o.rule}` : "",
+    o.delivery ? `DELIVERY: ${o.delivery}` : "",
     `NEW:\n${o.text}`,
   ].filter(Boolean).join("\n\n");
 }

@@ -19,7 +19,7 @@ export type AccountCtx = {
 export type AccountSettings = {
   comments?: boolean;                 // auto-handle comments (default true)
   dms?: boolean;                      // auto-handle DMs (default true)
-  comment_strategy?: "smart" | "public" | "private_first";
+  comment_strategy?: "smart" | "public" | "private" | "private_first";  // private_first = both
   public_ack?: string[];              // used with private_first
   noise?: "ignore" | "thanks";
   thanks_variants?: string[];

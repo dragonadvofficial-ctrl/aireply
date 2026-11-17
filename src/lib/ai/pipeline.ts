@@ -21,11 +21,15 @@ import { overBudget, recordUsage } from "./usage";
  * Low confidence never auto-posts: it becomes a draft for a human.
  */
 
+export type CommentAction = "public" | "private" | "both";
+
 export type Decision = {
   route: "rule" | "cache" | "llm" | "skip";
   action: "reply" | "handoff" | "ignore" | "hide";
   reply?: string;
   privateReply?: string;
+  /** set by a keyword rule: overrides the account's comment strategy */
+  commentAction?: CommentAction;
   meta: {
     reason?: string; ruleId?: string; similarity?: number; model?: string; mode?: "stuffed" | "rag";
     input?: number; cached?: number; output?: number; cost?: number;
@@ -69,18 +73,28 @@ async function climb(input: DecideInput): Promise<Decision> {
       : { route: "rule", action: "ignore", meta: { reason: "noise" } };
   }
 
-  // ── 1. quick replies
+  // ── 1. keyword rules
   const rule = await matchQuickReply(ctx, channel, text);
+  const ruleAction: CommentAction | undefined = rule && rule.comment_action !== "account" ? rule.comment_action as CommentAction : undefined;
   if (rule) {
     await sql`update quick_replies set hits = hits + 1 where id = ${rule.id}`;
-    return { route: "rule", action: "reply", reply: pick(rule.replies), privateReply: rule.private_reply ?? undefined, meta: { ruleId: rule.id, reason: `rule:${rule.name}` } };
+    if (rule.respond !== "ai") {
+      const pub = rule.replies?.length ? pick(rule.replies) : undefined;
+      const priv = rule.private_reply || undefined;
+      return {
+        route: "rule", action: "reply", commentAction: ruleAction,
+        reply: channel === "dm" ? (pub ?? priv) : pub, privateReply: channel === "dm" ? undefined : priv,
+        meta: { ruleId: rule.id, reason: `rule:${rule.name}` },
+      };
+    }
   }
+  const aiRule = rule?.respond === "ai" ? rule : null;
 
   if (!aiEnabled()) return { route: "skip", action: "handoff", meta: { reason: `${aiKeyName()} missing` } };
   if (await overBudget(ctx.workspaceId)) return { route: "skip", action: "handoff", meta: { reason: "monthly AI budget reached" } };
 
   const complaint = looksLikeComplaint(text);
-  const cacheEligible = !complaint && (channel === "comment" || input.isFirstTurn);
+  const cacheEligible = !aiRule && !complaint && (channel === "comment" || input.isFirstTurn);
   const norm = normalize(text);
 
   // ── 2. exact cache
@@ -116,7 +130,11 @@ async function climb(input: DecideInput): Promise<Decision> {
   const res = await complete({
     model,
     system: staticPrompt(ctx, brain.staticText),
-    user: dynamicPrompt({ ctx, channel, text, contactName: input.contactName, summary: input.summary, history: input.history, retrieved }),
+    user: dynamicPrompt({
+      ctx, channel, text, contactName: input.contactName, summary: input.summary, history: input.history, retrieved,
+      rule: aiRule ? [aiRule.instructions, aiRule.replies?.length ? `Example replies: ${aiRule.replies.join(" / ")}` : "", aiRule.private_reply ? `Private message data: ${aiRule.private_reply}` : ""].filter(Boolean).join("\n") : undefined,
+      delivery: deliveryHint(channel, ruleAction ?? strategyAction(ctx.account.settings.comment_strategy)),
+    }),
     schema: { name: "reply_decision", schema: DECISION_SCHEMA },
     maxTokens: env.AI_REASONING_EFFORT ? 1200 : 400,
     cacheKey: `rply:${ctx.scopeKey}`,
@@ -135,10 +153,11 @@ async function climb(input: DecideInput): Promise<Decision> {
   if (action === "hide" && channel === "dm") action = "ignore";
 
   const decision: Decision = {
-    route: "llm", action,
+    route: "llm", action, commentAction: ruleAction,
     reply: out.reply ? clampReply(out.reply, maxChars) : undefined,
     privateReply: out.private_reply ? clampReply(out.private_reply, maxChars) : undefined,
-    meta: { model, mode: brain.mode, ...usage, cost, intent: out.intent, sentiment: out.sentiment, confidence: out.confidence, note: out.note || undefined },
+    meta: { model, mode: brain.mode, ...usage, cost, intent: out.intent, sentiment: out.sentiment, confidence: out.confidence, note: out.note || undefined,
+            ...(aiRule ? { ruleId: aiRule.id, reason: `rule:${aiRule.name} (AI)` } : {}) },
   };
 
   // learn: next time this question costs 0 tokens
@@ -156,41 +175,74 @@ async function cacheHit(hit: { id: number; answer: string }, similarity: number)
   return { route: "cache", action: "reply", reply: a.reply, privateReply: a.private || undefined, meta: { similarity: +similarity.toFixed(3) } };
 }
 
-type QuickReply = { id: string; name: string; triggers: string[]; match: string; channel: string; replies: string[]; private_reply: string | null; scope: string };
+type QuickReply = {
+  id: string; name: string; triggers: string[]; match: string; channel: string; replies: string[]; private_reply: string | null; scope: string;
+  respond: "fixed" | "ai"; instructions: string; comment_action: "account" | CommentAction;
+};
 
 async function matchQuickReply(ctx: BrainCtx, channel: "comment" | "dm", text: string): Promise<QuickReply | null> {
   const rows = await sql<QuickReply[]>`
-    select id, name, triggers, match, channel, replies, private_reply, scope from quick_replies
+    select id, name, triggers, match, channel, replies, private_reply, scope, respond, instructions, comment_action from quick_replies
     where workspace_id = ${ctx.workspaceId} and enabled and (channel = 'any' or channel = ${channel})
       and (scope = 'workspace' or (scope = 'squad' and scope_id = ${ctx.squad?.id ?? null}) or (scope = 'account' and scope_id = ${ctx.account.id}))
     order by case scope when 'account' then 0 when 'squad' then 1 else 2 end, created_at`;
   const norm = ` ${normalize(text)} `;
+  const words = squeeze(text).split(" ").filter(Boolean);
+  const bare = ` ${words.map(stripPrefix).join(" ")} `;          // "وبكاااام" → "بكام"
+  const full = ` ${words.join(" ")} `;
+  const has = (t: string) => {
+    const nt = squeeze(t);
+    if (!nt) return false;
+    return [full, bare].some((m) => m.includes(` ${nt} `) || (nt.includes(" ") && m.includes(nt)));
+  };
   for (const r of rows) {
-    if (!r.replies?.length) continue;
-    const hit = r.triggers.some((t) => {
+    if (r.respond !== "ai" && !r.replies?.length && !r.private_reply) continue;
+    const hit = r.match === "all" ? r.triggers.length > 0 && r.triggers.every(has) : r.triggers.some((t) => {
       if (r.match === "regex") { try { return new RegExp(t, "iu").test(text); } catch { return false; } }
-      const nt = normalize(t);
-      if (!nt) return false;
-      return r.match === "exact" ? norm.trim() === nt : norm.includes(` ${nt} `) || (nt.includes(" ") && norm.includes(nt));
+      return r.match === "exact" ? [norm.trim(), full.trim()].includes(squeeze(t)) || norm.trim() === normalize(t) : has(t);
     });
     if (hit) return r;
   }
   return null;
 }
 
-/** Comment strategy: smart (model decides) | public only | short public ack + details in DM. */
+/** matching-only form: also collapses doubled letters ("بكاام" → "بكام") */
+const squeeze = (t: string) => normalize(t).replace(/(\p{L})\1+/gu, "$1");
+/** Arabic conjunction glued to the word: و / ف (keep short words intact) */
+const stripPrefix = (w: string) => (w.length > 3 && /^[وف]/.test(w) ? w.slice(1) : w);
+
+const strategyAction = (s?: string): CommentAction | undefined =>
+  s === "public" ? "public" : s === "private" ? "private" : s === "private_first" ? "both" : undefined;   // smart → model decides
+
+function deliveryHint(channel: "comment" | "dm", a?: CommentAction) {
+  if (channel !== "comment") return undefined;
+  if (a === "private") return `Your answer will be sent ONLY as a private message to the commenter. Put the full answer in "private_reply"; "reply" can stay empty.`;
+  if (a === "public") return `Only a public comment reply will be sent. Put everything in "reply"; leave "private_reply" empty.`;
+  if (a === "both") return `A short public reply AND a private message will be sent. "reply" = one short public line; "private_reply" = the full details.`;
+  return undefined;
+}
+
+/** Where comment replies go: a matched rule's choice wins, otherwise the account's strategy. */
 function applyStrategy(input: DecideInput, d: Decision): Decision {
   if (input.channel !== "comment" || d.action !== "reply") {
     if (input.channel === "dm") d.privateReply = undefined;
     return d;
   }
   const s = input.ctx.account.settings;
-  const strategy = s.comment_strategy ?? "smart";
-  if (strategy === "public") d.privateReply = undefined;
-  if (strategy === "private_first" && d.route !== "rule") {
+  const mode = d.commentAction ?? strategyAction(s.comment_strategy);
+  const ack = () => pick(s.public_ack?.length ? s.public_ack : DEFAULT_ACK);
+  if (mode === "public") {
+    d.reply = d.reply || d.privateReply;
+    d.privateReply = undefined;
+  } else if (mode === "private") {
+    d.privateReply = d.privateReply || d.reply;
+    d.reply = undefined;
+  } else if (mode === "both") {
     const details = d.privateReply || d.reply;
+    // a rule with its own public text keeps it; otherwise a short "check your DMs" line
+    d.reply = d.route === "rule" && d.reply && d.privateReply ? d.reply : ack();
     d.privateReply = details;
-    d.reply = pick(s.public_ack?.length ? s.public_ack : DEFAULT_ACK);
   }
+  if (!d.reply && !d.privateReply) return { ...d, action: "ignore", meta: { ...d.meta, reason: "nothing to send" } };
   return d;
 }
