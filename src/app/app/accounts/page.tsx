@@ -74,9 +74,10 @@ export default async function Accounts({ searchParams }: { searchParams: Promise
               </label>
               <label className="field"><span>Comments</span>
                 <select name="comment_strategy" className="select" defaultValue={sel.settings?.comment_strategy ?? "smart"}>
-                  <option value="smart">Reply in public, DM when details are private</option>
-                  <option value="public">Public replies only</option>
-                  <option value="private_first">Short public reply, details by DM</option>
+                  <option value="smart">AI decides: public, plus a DM when details are private</option>
+                  <option value="public">Reply in the comment only</option>
+                  <option value="private">Private message only</option>
+                  <option value="private_first">Both: short comment reply + details by DM</option>
                 </select>
               </label>
               <div className="field"><span>Wait before replying to comments</span>
@@ -98,7 +99,7 @@ export default async function Accounts({ searchParams }: { searchParams: Promise
               <Switch name="paused" defaultChecked={sel.status === "paused"} label="Pause this account" />
             </div>
 
-            <label className="field"><span>Public replies for “details by DM”</span>
+            <label className="field"><span>Short comment replies for “Both”</span>
               <textarea name="public_ack" className="textarea" style={{ minHeight: 80 }} dir="auto"
                 defaultValue={(sel.settings?.public_ack ?? []).join("\n")} placeholder={"بعتنالك التفاصيل في الرسايل ✉️\nشيّك على الرسايل 💌"} />
               <small>One per line. rply rotates them so the page doesn’t look like a bot.</small>
