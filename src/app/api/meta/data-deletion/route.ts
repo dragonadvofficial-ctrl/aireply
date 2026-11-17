@@ -16,5 +16,5 @@ export async function POST(req: Request) {
   const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
   if (data.user_id) await sql`delete from contacts where external_id = ${String(data.user_id)}`;
   const code = randomUUID();
-  return NextResponse.json({ url: `${env.APP_URL}/privacy?deletion=${code}`, confirmation_code: code });
+  return NextResponse.json({ url: `${env.APP_URL}/data-deletion?code=${code}`, confirmation_code: code });
 }
