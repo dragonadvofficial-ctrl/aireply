@@ -3,7 +3,7 @@ import { env } from "../env";
 import type { BrainCtx } from "./context";
 import { embed } from "./embed";
 import { brainForPrompt, retrieve } from "./knowledge";
-import { ai, aiEnabled } from "./openai";
+import { aiEnabled, aiKeyName, complete, models } from "./openai";
 import { DECISION_SCHEMA, dynamicPrompt, staticPrompt, type Turn } from "./prompt";
 import { clampReply, isNoise, isSpam, looksLikeComplaint, normalize, pick } from "./text";
 import { overBudget, recordUsage } from "./usage";
@@ -76,7 +76,7 @@ async function climb(input: DecideInput): Promise<Decision> {
     return { route: "rule", action: "reply", reply: pick(rule.replies), privateReply: rule.private_reply ?? undefined, meta: { ruleId: rule.id, reason: `rule:${rule.name}` } };
   }
 
-  if (!aiEnabled()) return { route: "skip", action: "handoff", meta: { reason: "OPENAI_API_KEY missing" } };
+  if (!aiEnabled()) return { route: "skip", action: "handoff", meta: { reason: `${aiKeyName()} missing` } };
   if (await overBudget(ctx.workspaceId)) return { route: "skip", action: "handoff", meta: { reason: "monthly AI budget reached" } };
 
   const complaint = looksLikeComplaint(text);
@@ -111,27 +111,23 @@ async function climb(input: DecideInput): Promise<Decision> {
   // ── 4/5. LLM
   const retrieved = brain.mode === "rag" && embedding ? await retrieve(ctx, embedding) : [];
   const longDm = channel === "dm" && ((input.history?.length ?? 0) >= 8 || text.length > 500);
-  const model = (complaint || longDm) && ctx.account.settings.smart_model !== false ? env.AI_MODEL_SMART : env.AI_MODEL_FAST;
+  const model = (complaint || longDm) && ctx.account.settings.smart_model !== false ? models().smart : models().fast;
 
-  const res = await ai().responses.create({
+  const res = await complete({
     model,
-    input: [
-      { role: "developer", content: staticPrompt(ctx, brain.staticText) },
-      { role: "user", content: dynamicPrompt({ ctx, channel, text, contactName: input.contactName, summary: input.summary, history: input.history, retrieved }) },
-    ],
-    text: { format: { type: "json_schema", name: "reply_decision", schema: DECISION_SCHEMA as any, strict: true } },
-    max_output_tokens: env.AI_REASONING_EFFORT ? 1200 : 400,
-    prompt_cache_key: `rply:${ctx.scopeKey}`,
-    store: false,
-    ...(env.AI_REASONING_EFFORT ? { reasoning: { effort: env.AI_REASONING_EFFORT as any } } : {}),
+    system: staticPrompt(ctx, brain.staticText),
+    user: dynamicPrompt({ ctx, channel, text, contactName: input.contactName, summary: input.summary, history: input.history, retrieved }),
+    schema: { name: "reply_decision", schema: DECISION_SCHEMA },
+    maxTokens: env.AI_REASONING_EFFORT ? 1200 : 400,
+    cacheKey: `rply:${ctx.scopeKey}`,
+    reasoning: env.AI_REASONING_EFFORT || undefined,
   });
 
-  const u = res.usage;
-  const usage = { input: u?.input_tokens ?? 0, cached: u?.input_tokens_details?.cached_tokens ?? 0, output: u?.output_tokens ?? 0 };
+  const usage = { input: res.input, cached: res.cached, output: res.output };
   const cost = await recordUsage({ workspaceId: ctx.workspaceId, accountId: ctx.account.id, kind: "chat", model, route: "llm", ...usage });
 
   let out: any;
-  try { out = JSON.parse(res.output_text); } catch { return { route: "llm", action: "handoff", meta: { model, ...usage, cost, reason: "unparseable model output" } }; }
+  try { out = JSON.parse(res.text); } catch { return { route: "llm", action: "handoff", meta: { model, ...usage, cost, reason: "unparseable model output" } }; }
 
   const maxChars = Math.min(ctx.persona.max_chars, ctx.account.platform === "instagram" ? 950 : 1900);
   let action: Decision["action"] = out.action;
