@@ -1,6 +1,6 @@
 import { sql } from "../db";
 import { env } from "../env";
-import { ai, aiEnabled } from "./openai";
+import { aiEnabled, complete, models } from "./openai";
 import { recordUsage } from "./usage";
 
 const EVERY = 12; // re-summarize after this many new messages
@@ -21,18 +21,16 @@ export async function maybeSummarize(conversationId: string) {
     order by created_at desc limit ${EVERY + 6}`;
   const transcript = msgs.reverse().map((m) => `${m.direction === "in" ? "customer" : "brand"}: ${m.text.slice(0, 300)}`).join("\n");
 
-  const res = await ai().responses.create({
-    model: env.AI_MODEL_FAST,
-    input: [
-      { role: "developer", content: "Update the running summary of a customer conversation. ≤60 words. Keep: what they want, products/sizes/quantities, promises the brand made, open issues, their mood. Same language as the chat. Output only the summary." },
-      { role: "user", content: `PREVIOUS SUMMARY: ${c.summary || "(none)"}\n\nNEW MESSAGES:\n${transcript}` },
-    ],
-    max_output_tokens: 160,
-    store: false,
+  const fast = models().fast;
+  const res = await complete({
+    model: fast,
+    system: "Update the running summary of a customer conversation. ≤60 words. Keep: what they want, products/sizes/quantities, promises the brand made, open issues, their mood. Same language as the chat. Output only the summary.",
+    user: `PREVIOUS SUMMARY: ${c.summary || "(none)"}\n\nNEW MESSAGES:\n${transcript}`,
+    maxTokens: 160,
   });
   await recordUsage({
-    workspaceId: c.workspace_id, accountId: c.account_id, kind: "summary", model: env.AI_MODEL_FAST, route: "memory",
-    input: res.usage?.input_tokens ?? 0, cached: res.usage?.input_tokens_details?.cached_tokens ?? 0, output: res.usage?.output_tokens ?? 0,
+    workspaceId: c.workspace_id, accountId: c.account_id, kind: "summary", model: fast, route: "memory",
+    input: res.input, cached: res.cached, output: res.output,
   });
-  await sql`update conversations set summary = ${res.output_text.trim().slice(0, 800)}, summarized_n = message_count where id = ${conversationId}`;
+  await sql`update conversations set summary = ${res.text.trim().slice(0, 800)}, summarized_n = message_count where id = ${conversationId}`;
 }
