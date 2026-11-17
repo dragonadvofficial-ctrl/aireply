@@ -13,9 +13,15 @@ export const env = {
   DB_POOL_MAX: Number(e.DB_POOL_MAX ?? 10),
 
   OPENAI_API_KEY: e.OPENAI_API_KEY ?? "",
+  GEMINI_API_KEY: e.GEMINI_API_KEY ?? "",
+  // "gemini" is used whenever GEMINI_API_KEY is set, unless AI_PROVIDER=openai forces OpenAI.
+  AI_PROVIDER: ((e.AI_PROVIDER || (e.GEMINI_API_KEY ? "gemini" : "openai")) as "openai" | "gemini"),
   AI_MODEL_FAST: e.AI_MODEL_FAST || "gpt-6-luna",
   AI_MODEL_SMART: e.AI_MODEL_SMART || "gpt-6.1-terra",
   AI_EMBED_MODEL: e.AI_EMBED_MODEL || "text-embedding-3-small",
+  GEMINI_MODEL_FAST: e.GEMINI_MODEL_FAST || "gemini-2.5-flash",
+  GEMINI_MODEL_SMART: e.GEMINI_MODEL_SMART || "gemini-2.5-pro",
+  GEMINI_EMBED_MODEL: e.GEMINI_EMBED_MODEL || "gemini-embedding-001",
   AI_REASONING_EFFORT: (e.AI_REASONING_EFFORT || "") as "" | "minimal" | "low" | "medium",
   AI_CACHE_SIMILARITY: Number(e.AI_CACHE_SIMILARITY ?? 0.93),
   AI_STUFF_KNOWLEDGE_TOKENS: Number(e.AI_STUFF_KNOWLEDGE_TOKENS ?? 2500),
