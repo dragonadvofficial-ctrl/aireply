@@ -54,11 +54,22 @@ export async function addQuickReply(form: FormData) {
   const { scope, scopeId } = parseScope(scopeRaw);
   const triggers = String(form.get("triggers") ?? "").split(/[,،\n]/).map((x) => x.trim()).filter(Boolean);
   const replies = String(form.get("replies") ?? "").split("\n").map((x) => x.trim()).filter(Boolean);
-  if (!triggers.length || !replies.length) return back(scopeRaw, "A rule needs at least one trigger and one reply");
+  const privateReply = String(form.get("private_reply") ?? "").trim() || null;
+  const instructions = String(form.get("instructions") ?? "").trim();
+  const respond = form.get("respond") === "ai" ? "ai" : "fixed";
+  const commentAction = ["public", "private", "both"].includes(String(form.get("comment_action"))) ? String(form.get("comment_action")) : "account";
+  const match = ["contains", "all", "exact", "regex"].includes(String(form.get("match"))) ? String(form.get("match")) : "contains";
+
+  if (!triggers.length) return back(scopeRaw, "Add at least one word or phrase");
+  if (respond === "ai" && !instructions) return back(scopeRaw, "Tell the AI how to answer and what data to use");
+  if (respond === "fixed") {
+    if (!replies.length && !privateReply) return back(scopeRaw, "Write the reply text");
+    if (commentAction === "public" && !replies.length) return back(scopeRaw, "Public-only rules need a public reply");
+  }
   await sql`
-    insert into quick_replies (workspace_id, scope, scope_id, name, triggers, match, channel, replies, private_reply)
-    values (${s.wid}, ${scope}, ${scopeId}, ${String(form.get("name") || triggers[0])}, ${triggers}, ${String(form.get("match") ?? "contains")},
-            ${String(form.get("channel") ?? "any")}, ${replies}, ${String(form.get("private_reply") ?? "").trim() || null})`;
+    insert into quick_replies (workspace_id, scope, scope_id, name, triggers, match, channel, replies, private_reply, respond, instructions, comment_action)
+    values (${s.wid}, ${scope}, ${scopeId}, ${String(form.get("name") || "").trim() || triggers[0]}, ${triggers}, ${match},
+            ${String(form.get("channel") ?? "any")}, ${replies}, ${privateReply}, ${respond}, ${instructions}, ${commentAction})`;
   revalidatePath("/app/brain");
   back(scopeRaw, "Rule added");
 }

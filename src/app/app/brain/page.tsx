@@ -8,6 +8,8 @@ import { Art } from "@/components/Art";
 import { Toast } from "@/components/Toast";
 import { addQuickReply, addSource, quickReplyAction, sourceAction } from "./actions";
 
+const ACTION_LABEL: Record<string, string> = { account: "Account setting", public: "Comment only", private: "Private only", both: "Comment + private" };
+const MATCH_LABEL: Record<string, string> = { contains: "any word", all: "all words", exact: "exact", regex: "regex" };
 const KINDS = [["note", "Note"], ["faq", "FAQ"], ["product", "Price list"], ["url", "Web page"], ["file", "File"]] as const;
 const PLACEHOLDER: Record<string, string> = {
   note: "Delivery: Cairo & Giza 2–3 days (60 EGP). Other governorates 4–6 days (85 EGP).\nWe open 11am–11pm, Friday from 2pm.",
@@ -84,15 +86,24 @@ export default async function Brain({ searchParams }: { searchParams: Promise<{ 
 
           <div className="panel">
             <div className="panel-pad" style={{ paddingBottom: 8 }}>
-              <h2 className="h3">Instant replies</h2>
-              <p className="muted" style={{ margin: "6px 0 0" }}>When a message contains a trigger, rply sends one of these replies right away. No AI involved.</p>
+              <h2 className="h3">Keyword rules</h2>
+              <p className="muted" style={{ margin: "6px 0 0" }}>When a comment or DM has these words, rply answers the way you set here: your exact text, or the AI writing it from your instructions and data.</p>
             </div>
             <ul className="list">
               {rules.map((r) => (
                 <li key={r.id} className="list-row">
                   <div style={{ flex: 1, minWidth: 0, opacity: r.enabled ? 1 : 0.5 }}>
-                    <div className="row" style={{ gap: 6 }}>{r.triggers.map((t: string) => <span key={t} className="chip chip-tomato" dir="auto">{t}</span>)}<span className="meta">{r.match}, {r.channel === "any" ? "comments and DMs" : r.channel + "s"}, used {r.hits}×</span></div>
-                    <p dir="auto" style={{ margin: "6px 0 0", textAlign: "left" }}>{r.replies[0]}{r.replies.length > 1 ? <span className="meta"> +{r.replies.length - 1} more</span> : null}</p>
+                    <div className="row" style={{ gap: 6 }}>
+                      {r.triggers.map((t: string) => <span key={t} className="chip chip-tomato" dir="auto">{t}</span>)}
+                      <span className={`chip ${r.respond === "ai" ? "chip-lime" : ""}`}>{r.respond === "ai" ? "AI writes it" : "Fixed text"}</span>
+                      {r.channel !== "dm" && <span className="chip chip-black">{ACTION_LABEL[r.comment_action] ?? ACTION_LABEL.account}</span>}
+                      <span className="meta">{MATCH_LABEL[r.match] ?? r.match}, {r.channel === "any" ? "comments and DMs" : r.channel + "s"}, used {r.hits}×</span>
+                    </div>
+                    <p dir="auto" style={{ margin: "6px 0 0", textAlign: "left" }}>
+                      {r.respond === "ai" ? r.instructions : (r.replies[0] ?? r.private_reply)}
+                      {r.respond !== "ai" && r.replies.length > 1 ? <span className="meta"> +{r.replies.length - 1} more</span> : null}
+                    </p>
+                    {r.respond !== "ai" && r.private_reply && r.replies.length > 0 && <p dir="auto" className="muted" style={{ margin: "4px 0 0", textAlign: "left" }}>DM: {r.private_reply}</p>}
                   </div>
                   <form action={quickReplyAction} className="row" style={{ gap: 6, flexWrap: "nowrap" }}>
                     <input type="hidden" name="id" value={r.id} /><input type="hidden" name="scope" value={scope} />
@@ -102,18 +113,32 @@ export default async function Brain({ searchParams }: { searchParams: Promise<{ 
                 </li>
               ))}
             </ul>
-            <details style={{ borderTop: "1px solid var(--line)" }}>
-              <summary className="panel-pad" style={{ fontWeight: 650 }}>Add an instant reply</summary>
+            <details style={{ borderTop: "1px solid var(--line)" }} open={rules.length === 0}>
+              <summary className="panel-pad" style={{ fontWeight: 650 }}>Add a keyword rule</summary>
               <form action={addQuickReply} className="stack" style={{ padding: "0 22px 22px" }}>
                 <input type="hidden" name="scope" value={scope} />
-                <label className="field"><span>Triggers</span><input name="triggers" className="input" placeholder="بكام, السعر, price, كام" dir="auto" required /><small>Separate with commas. Spelling variants are matched for you (أ/ا, ة/ه, stretched letters).</small></label>
+                <label className="field"><span>Words or phrases</span><input name="triggers" className="input" placeholder="بكام, السعر, price, عرض الصيف" dir="auto" required /><small>Separate with commas. A phrase like “عرض الصيف” matches as a whole. Spelling variants are matched for you (أ/ا, ة/ه, stretched letters).</small></label>
                 <div className="form-grid">
-                  <label className="field"><span>Match</span><select name="match" className="select"><option value="contains">Message contains a trigger</option><option value="exact">Message is exactly a trigger</option><option value="regex">Regular expression</option></select></label>
+                  <label className="field"><span>Match when the message</span><select name="match" className="select">
+                    <option value="contains">has any of these</option><option value="all">has all of these</option>
+                    <option value="exact">is exactly one of these</option><option value="regex">matches a regular expression</option>
+                  </select></label>
                   <label className="field"><span>Where</span><select name="channel" className="select"><option value="any">Comments and DMs</option><option value="comment">Comments only</option><option value="dm">DMs only</option></select></label>
                 </div>
-                <label className="field"><span>Replies</span><textarea name="replies" className="textarea" style={{ minHeight: 80 }} dir="auto" placeholder={"بعتنالك الأسعار في الرسايل ❤️\nالأسعار عندك في الخاص ✨"} required /><small>One per line. rply rotates them.</small></label>
-                <label className="field"><span>Private reply (comments only, optional)</span><textarea name="private_reply" className="textarea" style={{ minHeight: 70 }} dir="auto" placeholder="الهودي بـ750 جنيه والكارجو بـ690، المقاسات من S لـ XXL" /></label>
-                <button className="btn">Add instant reply</button>
+                <div className="form-grid">
+                  <label className="field"><span>How to answer</span><select name="respond" className="select">
+                    <option value="fixed">Send my exact text</option><option value="ai">AI writes it from my instructions</option>
+                  </select></label>
+                  <label className="field"><span>Comment reply goes to</span><select name="comment_action" className="select">
+                    <option value="account">Follow the account setting</option><option value="public">The comment only</option>
+                    <option value="private">Private message only</option><option value="both">Both: comment + private message</option>
+                  </select></label>
+                </div>
+                <label className="field"><span>Instructions and data (for “AI writes it”)</span><textarea name="instructions" className="textarea" style={{ minHeight: 110 }} dir="auto" placeholder={"عرض الصيف: خصم 20% على كل التيشيرتات لحد 30 نوفمبر، والشحن مجاني فوق 1000 جنيه.\nرد بحماس وباختصار، واسأله عايز مقاس إيه، ومتذكرش أي أسعار غير دي."} /><small>What it should say, the facts to use, and the tone. It still follows the account’s voice.</small></label>
+                <label className="field"><span>Public reply (for “Send my exact text”)</span><textarea name="replies" className="textarea" style={{ minHeight: 80 }} dir="auto" placeholder={"بعتنالك الأسعار في الرسايل ❤️\nالأسعار عندك في الخاص ✨"} /><small>One per line. rply rotates them. In DMs this is the reply.</small></label>
+                <label className="field"><span>Private message (for “Send my exact text”)</span><textarea name="private_reply" className="textarea" style={{ minHeight: 70 }} dir="auto" placeholder="الهودي بـ750 جنيه والكارجو بـ690، المقاسات من S لـ XXL" /><small>Sent by DM to the person who commented. Meta allows one per comment, within 7 days.</small></label>
+                <label className="field"><span>Rule name (optional)</span><input name="name" className="input" placeholder="Summer offer" dir="auto" /></label>
+                <button className="btn">Add rule</button>
               </form>
             </details>
           </div>
